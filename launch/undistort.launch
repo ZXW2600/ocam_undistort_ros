@@ -1,4 +1,6 @@
 <launch>
-      <node ns="galaxy_camera" pkg="ocam_image_undistort"  name="ocam_image_undistort_node"  type="ocam_image_undistort_node"  output="screen"/>
-    
+      <node pkg="ocam_image_undistort" name="ocam_image_undistort_node" type="ocam_image_undistort_node" output="screen">
+            <param name="subtopic" value="$(optenv NUM_CPUS 1)" />
+      </node>
+
 </launch>

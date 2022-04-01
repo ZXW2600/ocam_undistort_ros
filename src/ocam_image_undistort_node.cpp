@@ -27,74 +27,37 @@ int queue_size_;
 
 boost::mutex connect_mutex_;
 image_transport::CameraPublisher pub_rect_;
-image_transport::CameraPublisher h_rect_;
-image_transport::CameraPublisher s_rect_;
-image_transport::CameraPublisher v_rect_;
-// Shared parameters to be propagated to nodelet private namespaces
-boost::shared_ptr<ros::NodeHandle> private_nh;
 
-camera_model _model("/home/zxw2600/workspace/ws_icra/robot_ws/src/"
-                    "ocam_image_undistort/config/MER139-omni.xml");
+// Shared parameters to be propagated to nodelet private namespaces
+boost::shared_ptr<ros::NodeHandle> ptr_nh;
+
+camera_model _model;
+
+std::string sub_topic;
+std::string pub_camera;
+std::string config_file;
 
 void imageCb(const sensor_msgs::ImageConstPtr &image_msg,
              const sensor_msgs::CameraInfoConstPtr &info_msg) {
-  // Verify camera is actually calibrated
-  if (info_msg->K[0] == 0.0) {
-    ROS_ERROR("Rectified topic '%s' requested but camera publishing '%s' "
-              "is uncalibrated",
-              pub_rect_.getTopic().c_str(), sub_camera_.getInfoTopic().c_str());
-    return;
-  }
-
-  // If zero distortion, just pass the message along
-  bool zero_distortion = true;
-  for (size_t i = 0; i < info_msg->D.size(); ++i) {
-    if (info_msg->D[i] != 0.0) {
-      zero_distortion = false;
-      break;
-    }
-  }
-  // This will be true if D is empty/zero sized
-  if (zero_distortion) {
-    pub_rect_.publish(*image_msg.get(), _model.getCameraInfo());
-    return;
-  }
 
   // Create cv::Mat views onto both buffers
   const cv::Mat image = cv_bridge::toCvShare(image_msg)->image;
+
   cv::Mat rect;
   rect = _model.undistortImage(image);
-  cv::Mat image_hsv;
-  cv::cvtColor(rect, image_hsv, cv::COLOR_BGR2HSV);
-  //使用Mat容器，用at访问
-  cv::Mat channels[3];
-  split(image_hsv, channels);
+
   // Allocate new rectified image message
   sensor_msgs::ImagePtr rect_msg =
       cv_bridge::CvImage(image_msg->header, image_msg->encoding, rect)
           .toImageMsg();
-  // Allocate new rectified image message
-  sensor_msgs::ImagePtr h_msg =
-      cv_bridge::CvImage(image_msg->header, image_msg->encoding, channels[0])
-          .toImageMsg(); // Allocate new rectified image message
-  sensor_msgs::ImagePtr s_msg =
-      cv_bridge::CvImage(image_msg->header, image_msg->encoding, channels[1])
-          .toImageMsg(); // Allocate new rectified image message
-  sensor_msgs::ImagePtr v_msg =
-      cv_bridge::CvImage(image_msg->header, image_msg->encoding, channels[2])
-          .toImageMsg();
 
   ros::Time now = ros::Time::now();
+
   auto info = _model.getCameraInfo();
   rect_msg->header.stamp = now;
-  h_msg->header.stamp = now;
-  s_msg->header.stamp = now;
-  v_msg->header.stamp = now;
+
   info.header.stamp = now;
   pub_rect_.publish(*rect_msg.get(), info);
-  h_rect_.publish(*h_msg.get(), info);
-  s_rect_.publish(*s_msg.get(), info);
-  v_rect_.publish(*v_msg.get(), info);
 }
 
 // Handles (un)subscribing when clients (un)subscribe
@@ -104,51 +67,60 @@ void connectCb() {
     sub_camera_.shutdown();
   else if (!sub_camera_) {
     image_transport::TransportHints hints("raw", ros::TransportHints());
-    sub_camera_ =
-        it_->subscribeCamera("image_raw", queue_size_, imageCb, hints);
+    sub_camera_ = it_->subscribeCamera(sub_topic, queue_size_, imageCb, hints);
   }
 }
 
 int main(int argc, char **argv) {
   ros::init(argc, argv, "ocam_image_undistort");
-  private_nh.reset(new ros::NodeHandle(""));
-  // Check for common user errors
-  if (ros::names::remap("camera") != "camera") {
-    ROS_WARN("Remapping 'camera' has no effect! Start image_proc in the "
-             "camera namespace instead.\nExample command-line usage:\n"
-             "\t$ ROS_NAMESPACE=%s rosrun image_proc image_proc",
-             ros::names::remap("camera").c_str());
-  }
-  if (ros::this_node::getNamespace() == "/") {
-    ROS_WARN("Started in the global namespace! This is probably wrong. Start "
-             "image_proc "
-             "in the camera namespace.\nExample command-line usage:\n"
-             "\t$ ROS_NAMESPACE=my_camera rosrun image_proc image_proc");
-  }
+  ptr_nh.reset(new ros::NodeHandle("~"));
+  ptr_nh->setParam("testparam", "test");
 
-  it_.reset(new image_transport::ImageTransport(*private_nh.get()));
+
+  if (!ptr_nh->hasParam("subtopic")) {
+    ROS_ERROR("subtopic paramter needed!");
+    // return -1;
+  } else {
+    ptr_nh->getParam("subtopic", sub_topic);
+  }
+  if (!ptr_nh->hasParam("pubcamera")) {
+    ROS_ERROR("pubcamera paramter needed!");
+    // return -1;
+  } else
+    ptr_nh->getParam("pubcamera", pub_camera);
+
+  if (!ptr_nh->hasParam("configfile")) {
+    ROS_ERROR("configfile paramter needed!");
+    // return -1;
+  }
+  else
+    ptr_nh->getParam("configfile", config_file);
+
+
+  ROS_INFO("Subscribe to camera : %s", sub_topic.c_str());
+  ROS_INFO("Publish new image to camera : %s", pub_camera.c_str());
+  ROS_INFO("Camera Paramter Config File : %s", config_file.c_str());
+
+
+  it_.reset(new image_transport::ImageTransport(*ptr_nh.get()));
+
   // Read parameters
-  private_nh->param("queue_size", queue_size_, 5);
+  ptr_nh->param("queue_size", queue_size_, 5);
 
+  // init
+  _model.initFromFile(config_file); 
   _model.getUndistrotMaps();
-  // // Set up dynamic reconfigure
-  // reconfigure_server_.reset(new ReconfigureServer(config_mutex_,
-  // private_nh)); ReconfigureServer::CallbackType f =
-  //     boost::bind(&RectifyNodelet::configCb, this, _1, _2);
-  // reconfigure_server_->setCallback(f);
 
   // Monitor whether anyone is subscribed to the output
   image_transport::SubscriberStatusCallback connect_cb =
       boost::bind(&connectCb);
-  { // Make sure we don't enter connectCb() between advertising and assigning to
+  {
+    // Make sure we don't enter connectCb() between advertising and assigning to
     // pub_rect_
     boost::lock_guard<boost::mutex> lock(connect_mutex_);
-    pub_rect_ =
-        it_->advertiseCamera("rect/image_raw", 1, connect_cb, connect_cb);
-    h_rect_ = it_->advertiseCamera("h/image_raw", 1, connect_cb, connect_cb);
-    s_rect_ = it_->advertiseCamera("s/image_raw", 1, connect_cb, connect_cb);
-    v_rect_ = it_->advertiseCamera("v/image_raw", 1, connect_cb, connect_cb);
+    pub_rect_ = it_->advertiseCamera(pub_camera, 1, connect_cb, connect_cb);
   }
+
   ros::spin();
   return 0;
 }
